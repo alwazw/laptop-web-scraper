@@ -2,6 +2,8 @@
 build/
 dist/
 *.egg-info/
+__pycache__/
+*.pyc
 
 # Testing
 .pytest_cache/
@@ -15,3 +17,5 @@ htmlcov/
 # Scraping / Data garbage
 *.log
 .ipynb_checkpoints/
+data/*.db
+data/*.sqlite
