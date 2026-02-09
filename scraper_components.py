@@ -22,7 +22,8 @@ async def scrape_amazon_ca(page, search_term):
         # Wait for search results
         try:
             await page.wait_for_selector('div.s-result-item, div[data-component-type="s-search-result"]', timeout=15000)
-        except:
+        except Exception as e:
+            print(f"Timeout or error waiting for search results: {e}")
             return []
 
         # Get all result items
@@ -30,7 +31,7 @@ async def scrape_amazon_ca(page, search_term):
         if not items:
             items = await page.query_selector_all('div.s-result-item')
 
-        prices = []
+        results = []
 
         for item in items[:25]:  # Check first 25 items
             try:
@@ -47,7 +48,8 @@ async def scrape_amazon_ca(page, search_term):
                 if offscreen:
                     txt = await offscreen.inner_text()
                     if '$' in txt and 'capacity' not in txt.lower():
-                        price_match = re.search(r'(\d+,)?\d+(\.\d+)?', txt.replace(',', ''))
+                        # Standardized price regex after removing comma
+                        price_match = re.search(r'\d+(\.\d+)?', txt.replace(',', ''))
                         if price_match:
                             price = float(price_match.group(0))
 
@@ -60,11 +62,16 @@ async def scrape_amazon_ca(page, search_term):
                             price = float(price_match.group(0))
 
                 if price and price > 0:
-                    prices.append(price)
+                    results.append({
+                        'price': price,
+                        'source': 'Amazon.ca',
+                        'url': f'https://www.amazon.ca/s?k={search_term.replace(" ", "+")}'
+                    })
             except Exception:
                 continue
 
-        return sorted(prices)[:3]
+        # Sort by price and take top 3
+        return sorted(results, key=lambda x: x['price'])[:3]
     except Exception as e:
         print(f'Error scraping Amazon.ca for {search_term}: {e}')
         return []
@@ -80,7 +87,7 @@ async def scrape_newegg_ca(page, search_term):
         # Get all result items
         items = await page.query_selector_all('div.item-cell')
 
-        prices = []
+        results = []
 
         for item in items[:20]:  # Check first 20 items
             try:
@@ -99,13 +106,18 @@ async def scrape_newegg_ca(page, search_term):
                         try:
                             price = float(price_str)
                             if price > 0:
-                                prices.append(price)
+                                results.append({
+                                    'price': price,
+                                    'source': 'Newegg.ca',
+                                    'url': f'https://www.newegg.ca/p/pl?d={search_term.replace(" ", "+")}'
+                                })
                         except ValueError:
                             pass
             except Exception as e:
                 continue
 
-        return sorted(prices)[:3]
+        # Sort by price and take top 3
+        return sorted(results, key=lambda x: x['price'])[:3]
     except Exception as e:
         print(f'Error scraping Newegg.ca for {search_term}: {e}')
         return []
@@ -198,39 +210,39 @@ async def scrape_components():
             else:  # SSD
                 search_terms = [f'{capacity} NVMe M.2 SSD', f'{capacity} NVMe SSD laptop']
 
-            all_prices = []
+            all_results = []
 
             # Try Amazon.ca
             for search_term in search_terms:
-                prices = await scrape_amazon_ca(page, search_term)
-                all_prices.extend(prices)
-                if len(all_prices) >= 3:
+                results = await scrape_amazon_ca(page, search_term)
+                all_results.extend(results)
+                if len(all_results) >= 3:
                     break
 
             # Try Newegg.ca if we don't have enough prices
-            if len(all_prices) < 3:
+            if len(all_results) < 3:
                 for search_term in search_terms:
-                    prices = await scrape_newegg_ca(page, search_term)
-                    all_prices.extend(prices)
-                    if len(all_prices) >= 3:
+                    results = await scrape_newegg_ca(page, search_term)
+                    all_results.extend(results)
+                    if len(all_results) >= 3:
                         break
 
             # Take top 3 lowest prices
-            if all_prices:
-                top_3_prices = sorted(all_prices)[:3]
-                avg_price = sum(top_3_prices) / len(top_3_prices)
+            if all_results:
+                top_3_results = sorted(all_results, key=lambda x: x['price'])[:3]
+                avg_price = sum(r['price'] for r in top_3_results) / len(top_3_results)
 
-                # Save individual prices
-                for price in top_3_prices:
-                    await save_component_data(component_type, subtype, capacity, price,
-                                            f'https://www.amazon.ca/search?q={search_term.replace(" ", "+")}',
-                                            'Amazon.ca')
+                # Save individual results
+                for r in top_3_results:
+                    await save_component_data(component_type, subtype, capacity, r['price'],
+                                            r['url'],
+                                            r['source'])
 
                 # Save daily average
                 component_key = f'{component_type}_{subtype}_{capacity}'
                 await save_daily_avg(component_key, avg_price)
 
-                print(f'  {component_type} {subtype} {capacity}: {top_3_prices} -> Avg: ${avg_price:.2f}')
+                print(f'  {component_type} {subtype} {capacity}: {[r["price"] for r in top_3_results]} -> Avg: ${avg_price:.2f}')
             else:
                 print(f'  No prices found for {component_type} {subtype} {capacity}')
 
