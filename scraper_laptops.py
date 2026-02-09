@@ -533,7 +533,7 @@ def extract_brand_from_title(title):
 
 def extract_cpu_from_title(title):
     # Look for common CPU patterns like i7-1185G7, M3 Pro, Ryzen 7 5800U, Celeron, Athlon
-    m = re.search(r'([iI]\u001f?\d-[\w\d-]+|M\d\s?Pro|Ryzen\s?\d+\s?\w+|Celeron\s?\w+|Athlon\s?\w+)', title, re.I)
+    m = re.search(r'([iI]\s?\d-[\w\d-]+|M\d\s?Pro|Ryzen\s?\d+\s?\w+|Celeron\s?\w+|Athlon\s?\w+)', title, re.I)
     if m:
         return m.group(0)
     # fallback: first token with digit

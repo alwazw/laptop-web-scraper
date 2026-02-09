@@ -1,0 +1,7 @@
+streamlit
+pandas
+plotly
+apscheduler
+playwright
+playwright-stealth
+pytest
