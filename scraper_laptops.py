@@ -228,121 +228,122 @@ async def run_live_scrape(limit_per_site=10, save=True, queries=None, sites=None
     if db_path:
         DB_PATH = db_path
 
-    async with async_playwright() as p:
-        all_results = []
-        manager = ProxyManager(proxies)
+    try:
+        async with async_playwright() as p:
+            all_results = []
+            manager = ProxyManager(proxies)
 
-        for idx, q in enumerate(queries):
-            q = q.strip()
-            attempts = 0
-            max_attempts = proxy_attempts or (len(proxies) if proxies else 1)
-            last_exception = None
+            for idx, q in enumerate(queries):
+                q = q.strip()
+                attempts = 0
+                max_attempts = proxy_attempts or (len(proxies) if proxies else 1)
+                last_exception = None
 
-            while attempts < max_attempts:
-                attempts += 1
-                proxy_to_use = None
-                if manager.has_proxies():
-                    if rotate_proxies:
-                        proxy_to_use = manager.get_proxy()
-                    else:
-                        proxy_to_use = manager.proxies[0]
+                while attempts < max_attempts:
+                    attempts += 1
+                    proxy_to_use = None
+                    if manager.has_proxies():
+                        if rotate_proxies:
+                            proxy_to_use = manager.get_proxy()
+                        else:
+                            proxy_to_use = manager.proxies[0]
 
-                launch_kwargs = {}
-                if proxy_to_use:
-                    launch_kwargs['proxy'] = {'server': proxy_to_use}
+                    launch_kwargs = {}
+                    if proxy_to_use:
+                        launch_kwargs['proxy'] = {'server': proxy_to_use}
 
-                try:
-                    browser = await p.chromium.launch(headless=True, **launch_kwargs)
-
-                    ua = UA_POOL[0]
-                    if randomize_ua:
-                        import random
-                        ua = random.choice(UA_POOL)
-
-                    context_kwargs = dict(user_agent=ua, viewport={'width': 1920, 'height': 1080})
-                    if stealth_level == 'aggressive':
-                        context_kwargs['locale'] = 'en-CA'
-                        context_kwargs['timezone_id'] = 'America/Toronto'
-
-                    context = await browser.new_context(**context_kwargs)
-                    await _init_stealth(context, level=stealth_level)
-                    page = await context.new_page()
-
-                    # per-site scraping
-                    page_results = []
-                    if 'amazon' in sites:
-                        try:
-                            res = await scrape_amazon(page, q, limit_per_site)
-                        except Exception as e:
-                            print('Amazon error:', e)
-                            res = []
-                        page_results.extend(res)
-
-                    if 'bestbuy' in sites:
-                        try:
-                            res = await scrape_bestbuy(page, q, limit_per_site)
-                        except Exception as e:
-                            print('BestBuy error:', e)
-                            res = []
-                        page_results.extend(res)
-
-                    if 'canadacomputers' in sites:
-                        try:
-                            res = await scrape_canadacomputers(page, q, limit_per_site)
-                        except Exception as e:
-                            print('CanadaComputers error:', e)
-                            res = []
-                        page_results.extend(res)
-
-                    # success for this attempt
-                    manager.report_success(proxy_to_use)
-                    all_results.extend(page_results)
-
-                    await context.close()
-                    await browser.close()
-                    break
-
-                except Exception as e:
-                    last_exception = e
-                    print(f'Attempt {attempts} for query "{q}" failed using proxy {proxy_to_use}: {e}')
-                    manager.report_failure(proxy_to_use)
                     try:
+                        browser = await p.chromium.launch(headless=True, **launch_kwargs)
+
+                        ua = UA_POOL[0]
+                        if randomize_ua:
+                            import random
+                            ua = random.choice(UA_POOL)
+
+                        context_kwargs = dict(user_agent=ua, viewport={'width': 1920, 'height': 1080})
+                        if stealth_level == 'aggressive':
+                            context_kwargs['locale'] = 'en-CA'
+                            context_kwargs['timezone_id'] = 'America/Toronto'
+
+                        context = await browser.new_context(**context_kwargs)
+                        await _init_stealth(context, level=stealth_level)
+                        page = await context.new_page()
+
+                        # per-site scraping
+                        page_results = []
+                        if 'amazon' in sites:
+                            try:
+                                res = await scrape_amazon(page, q, limit_per_site)
+                            except Exception as e:
+                                print('Amazon error:', e)
+                                res = []
+                            page_results.extend(res)
+
+                        if 'bestbuy' in sites:
+                            try:
+                                res = await scrape_bestbuy(page, q, limit_per_site)
+                            except Exception as e:
+                                print('BestBuy error:', e)
+                                res = []
+                            page_results.extend(res)
+
+                        if 'canadacomputers' in sites:
+                            try:
+                                res = await scrape_canadacomputers(page, q, limit_per_site)
+                            except Exception as e:
+                                print('CanadaComputers error:', e)
+                                res = []
+                            page_results.extend(res)
+
+                        # success for this attempt
+                        manager.report_success(proxy_to_use)
+                        all_results.extend(page_results)
+
                         await context.close()
-                    except Exception:
-                        pass
-                    try:
                         await browser.close()
-                    except Exception:
-                        pass
-                    # if no proxies left, stop retrying
-                    if not manager.has_proxies():
                         break
+
+                    except Exception as e:
+                        last_exception = e
+                        print(f'Attempt {attempts} for query "{q}" failed using proxy {proxy_to_use}: {e}')
+                        manager.report_failure(proxy_to_use)
+                        try:
+                            await context.close()
+                        except Exception:
+                            pass
+                        try:
+                            await browser.close()
+                        except Exception:
+                            pass
+                        # if no proxies left, stop retrying
+                        if not manager.has_proxies():
+                            break
+                        continue
+
+                if attempts >= max_attempts and last_exception:
+                    print(f'All proxy attempts failed for query "{q}": {last_exception}')
+                    # continue to next query
                     continue
+            # Deduplicate by normalized URL or title+price
+            unique = {}
+            for r in all_results:
+                url = r.get('url') or ''
+                key = url.split('?')[0].rstrip('/') if url else (r.get('title'), r.get('price'))
+                if key and key not in unique:
+                    unique[key] = r
 
-            if attempts >= max_attempts and last_exception:
-                print(f'All proxy attempts failed for query "{q}": {last_exception}')
-                # continue to next query
-                continue
-        # Deduplicate by normalized URL or title+price
-        unique = {}
-        for r in all_results:
-            url = r.get('url') or ''
-            key = url.split('?')[0].rstrip('/') if url else (r.get('title'), r.get('price'))
-            if key and key not in unique:
-                unique[key] = r
+            for r in unique.values():
+                src = r.get('source', 'unknown')
+                brand = extract_brand_from_title(r.get('title', ''))
+                product_hash = generate_product_hash(brand, r.get('cpu_model') or '', r.get('screen_size') or '')
+                save_product(product_hash, brand, r.get('title'), r.get('cpu_model') or '', r.get('screen_size') or '', is_ram_upgradeable(r.get('title')), True)
+                if save:
+                    save_listing(product_hash, src, 'New', r.get('title'), r.get('price'), r.get('cpu_model'), r.get('ram_capacity'), r.get('ram_type'), r.get('ssd_capacity'), r.get('url'))
 
-        for r in unique.values():
-            src = r.get('source', 'unknown')
-            brand = extract_brand_from_title(r.get('title', ''))
-            product_hash = generate_product_hash(brand, r.get('cpu_model') or '', r.get('screen_size') or '')
-            save_product(product_hash, brand, r.get('title'), r.get('cpu_model') or '', r.get('screen_size') or '', is_ram_upgradeable(r.get('title')), True)
-            if save:
-                save_listing(product_hash, src, 'New', r.get('title'), r.get('price'), r.get('cpu_model'), r.get('ram_capacity'), r.get('ram_type'), r.get('ssd_capacity'), r.get('url'))
-
+            print(f'Live scrape completed: saved {len(unique)} unique listings')
+    finally:
         # restore DB_PATH
         DB_PATH = old_db
-
-        print(f'Live scrape completed: saved {len(unique)} unique listings')
 
 
 # --- Site scrapers (called from run_live_scrape) ---
@@ -533,7 +534,7 @@ def extract_brand_from_title(title):
 
 def extract_cpu_from_title(title):
     # Look for common CPU patterns like i7-1185G7, M3 Pro, Ryzen 7 5800U, Celeron, Athlon
-    m = re.search(r'([iI]\u001f?\d-[\w\d-]+|M\d\s?Pro|Ryzen\s?\d+\s?\w+|Celeron\s?\w+|Athlon\s?\w+)', title, re.I)
+    m = re.search(r'([iI]\s?\d-[\w\d-]+|M\d\s?Pro|Ryzen\s?\d+\s?\w+|Celeron\s?\w+|Athlon\s?\w+)', title, re.I)
     if m:
         return m.group(0)
     # fallback: first token with digit
@@ -551,7 +552,8 @@ def extract_ram_from_title(title):
 
 
 def extract_ssd_from_title(title):
-    m = re.search(r'(\d+GB|\d+TB)\s*(SSD|nvme|SSD NVMe)?', title, re.I)
+    # Require SSD or NVMe keywords to avoid matching RAM
+    m = re.search(r'(\d+(?:GB|TB))\s*(?:SSD|nvme|SSD NVMe)', title, re.I)
     if m:
         return m.group(1)
     return None
