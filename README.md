@@ -19,7 +19,7 @@ A sophisticated Python suite designed to identify undervalued laptops in the Can
 1. **Clone & Setup**:
    ```bash
    git clone https://github.com/alwazw/laptop-web-scraper.git
-   cd laptop-arbitrage
+   cd laptop-web-scraper
    python -m venv .venv
    source .venv/bin/activate
    ```
