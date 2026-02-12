@@ -5,15 +5,16 @@ from data_utils import fetch_latest_listings, get_latest_component_prices, get_h
 def run_decision_engine():
     print('\n=== v2.0 Arbitrage Decision Engine ===')
 
+    items_processed = 0
     try:
         listings = fetch_latest_listings()
         latest_components = get_latest_component_prices()
 
         if listings.empty:
             print('No listings found to evaluate.')
+            log_execution('analyzer_v2', 'success', 0, error_message='No listings found')
             return
 
-        items_processed = 0
         with get_connection() as conn:
             for _, row in listings.iterrows():
                 # 1. Historical Baseline
@@ -51,7 +52,7 @@ def run_decision_engine():
 
     except Exception as e:
         print(f'Error in decision engine: {e}')
-        log_execution('analyzer_v2', 'failure', error_message=str(e))
+        log_execution('analyzer_v2', 'failure', items_found=items_processed, error_message=str(e))
 
 if __name__ == '__main__':
     run_decision_engine()

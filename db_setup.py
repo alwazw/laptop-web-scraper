@@ -105,6 +105,16 @@ def init_database(force_reset=False):
                 except Exception as e:
                     print(f"Migration error for {col}: {e}")
 
+        # Check for missing columns in execution_logs
+        cursor.execute("PRAGMA table_info(execution_logs)")
+        exec_columns = [col[1] for col in cursor.fetchall()]
+        if 'metadata' not in exec_columns:
+            try:
+                cursor.execute("ALTER TABLE execution_logs ADD COLUMN metadata TEXT")
+                print("Migrated: Added column metadata to execution_logs.")
+            except Exception as e:
+                print(f"Migration error for execution_logs metadata: {e}")
+
         # 5. Price History
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS listing_price_history (
@@ -143,7 +153,8 @@ def init_database(force_reset=False):
                 scraper_name TEXT,
                 status TEXT,
                 error_message TEXT,
-                items_found INTEGER
+                items_found INTEGER,
+                metadata TEXT
             )
         ''')
 

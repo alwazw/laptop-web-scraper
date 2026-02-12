@@ -141,7 +141,7 @@ async def _init_stealth(context):
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
 
 async def run_live_scrape(limit_per_site=None, save=True, queries=None, sites=None, proxies=None):
-    from data_utils import load_scraper_config
+    from data_utils import load_scraper_config, log_execution
     config = load_scraper_config()
     if config:
         queries = queries or config.get('queries')
@@ -153,6 +153,7 @@ async def run_live_scrape(limit_per_site=None, save=True, queries=None, sites=No
     limit_per_site = limit_per_site or 10
 
     all_results = []
+    execution_details = []
 
     async with async_playwright() as p:
         manager = ProxyManager(proxies)
@@ -168,39 +169,87 @@ async def run_live_scrape(limit_per_site=None, save=True, queries=None, sites=No
                 await _init_stealth(context)
                 page = await context.new_page()
 
-                if 'amazon' in sites:
-                    all_results.extend(await scrape_amazon(page, q, limit_per_site))
-                if 'bestbuy' in sites:
-                    all_results.extend(await scrape_bestbuy(page, q, limit_per_site))
-                if 'canadacomputers' in sites:
-                    all_results.extend(await scrape_canadacomputers(page, q, limit_per_site))
-                if 'walmart' in sites:
-                    all_results.extend(await scrape_walmart(page, q, limit_per_site))
-                if 'staples' in sites:
-                    all_results.extend(await scrape_staples(page, q, limit_per_site))
-                if 'dell' in sites:
-                    all_results.extend(await scrape_dell(page, q, limit_per_site))
-                if 'hp' in sites:
-                    all_results.extend(await scrape_hp(page, q, limit_per_site))
+                site_methods = {
+                    'amazon': scrape_amazon,
+                    'bestbuy': scrape_bestbuy,
+                    'canadacomputers': scrape_canadacomputers,
+                    'walmart': scrape_walmart,
+                    'staples': scrape_staples,
+                    'dell': scrape_dell,
+                    'hp': scrape_hp
+                }
+
+                for site in sites:
+                    if site in site_methods:
+                        try:
+                            res = await site_methods[site](page, q, limit_per_site)
+                            all_results.extend(res)
+                            execution_details.append({'query': q, 'site': site, 'status': 'success', 'found': len(res)})
+                        except Exception as se:
+                            execution_details.append({'query': q, 'site': site, 'status': 'failure', 'error': str(se)})
 
                 await browser.close()
             except Exception as e:
                 print(f"Scrape failed for query {q}: {e}")
                 manager.report_failure(proxy_to_use)
+                execution_details.append({'query': q, 'status': 'critical_failure', 'error': str(e)})
 
-    # deduplicate
+    # deduplicate and filter
     unique = {r['url']: r for r in all_results if r.get('url')}.values()
+
+    filtered_count = 0
+    filter_stats = {'brand': 0, 'ram': 0, 'ssd': 0}
 
     for r in unique:
         brand = extract_brand_from_title(r['title'])
         r['product_hash'] = generate_product_hash(brand, r['cpu_model'], r['screen_size'])
         r['condition_tier'] = extract_condition_tier(r['title'], r['source'])
 
+        # Apply Filters from config
+        if config:
+            if config.get('brands') and brand not in config['brands']:
+                filter_stats['brand'] += 1
+                continue
+
+            if config.get('min_ram'):
+                min_ram_val = int(re.sub(r'\D', '', config['min_ram']))
+                ram_cap, _ = extract_ram_from_title(r['title'])
+                if ram_cap:
+                    try:
+                        curr_ram_val = int(re.sub(r'\D', '', ram_cap))
+                        if curr_ram_val < min_ram_val:
+                            filter_stats['ram'] += 1
+                            continue
+                    except: pass
+
+            if config.get('min_ssd'):
+                def to_gb(s):
+                    if not s: return 0
+                    try:
+                        val = int(re.sub(r'\D', '', s))
+                        if 'TB' in s.upper(): val *= 1024
+                        return val
+                    except: return 0
+                min_ssd_gb = to_gb(config['min_ssd'])
+                ssd_cap = extract_ssd_from_title(r['title'])
+                if ssd_cap:
+                    if to_gb(ssd_cap) < min_ssd_gb:
+                        filter_stats['ssd'] += 1
+                        continue
+
         if save:
             save_product(r['product_hash'], brand, r['title'], r['cpu_model'], r['screen_size'], True, True)
             save_listing(r)
+            filtered_count += 1
 
-    print(f"v2.0 Scrape completed: {len(unique)} listings saved.")
+    # Update metadata with filter stats
+    log_execution('scraper_laptops', 'success', filtered_count, metadata={
+        'details': execution_details,
+        'filters_applied': filter_stats,
+        'total_scraped': len(unique)
+    })
+
+    print(f"v2.0 Scrape completed: {filtered_count} listings saved ({len(unique) - filtered_count} filtered).")
 
 def demo_mode():
     print('Starting laptop scraping (demo mode)...')

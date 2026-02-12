@@ -67,6 +67,13 @@ def get_historical_baseline(product_hash, days=60):
         res = conn.execute(query, (product_hash, cutoff)).fetchone()
         return res[0] if res and res[0] else None
 
+def get_historical_avg(product_hash, days=30):
+    cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    query = "SELECT AVG(price) FROM listing_price_history WHERE product_hash = ? AND recorded_at > ?"
+    with get_connection() as conn:
+        res = conn.execute(query, (product_hash, cutoff)).fetchone()
+        return res[0] if res and res[0] else None
+
 def calculate_tev(listing_row, latest_components, historical_new_price):
     """
     Returns (tev, harvest_total, chassis_value)
@@ -99,10 +106,10 @@ def calculate_tev(listing_row, latest_components, historical_new_price):
     tev = max(harvest_total, chassis_value)
     return tev, harvest_total, chassis_value
 
-def log_execution(scraper_name, status, items_found=0, error_message=None):
-    query = "INSERT INTO execution_logs (scraper_name, status, items_found, error_message) VALUES (?, ?, ?, ?)"
+def log_execution(scraper_name, status, items_found=0, error_message=None, metadata=None):
+    query = "INSERT INTO execution_logs (scraper_name, status, items_found, error_message, metadata) VALUES (?, ?, ?, ?, ?)"
     with get_connection() as conn:
-        conn.execute(query, (scraper_name, status, items_found, error_message))
+        conn.execute(query, (scraper_name, status, items_found, error_message, json.dumps(metadata) if metadata else None))
         conn.commit()
 
 def get_db_stats():

@@ -110,6 +110,8 @@ async def scrape_components():
     all_targets = ram_targets + ssd_targets
 
     items_processed = 0
+    succeeded_items = []
+    failures = []
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -117,22 +119,31 @@ async def scrape_components():
             page = await context.new_page()
 
             for component_type, subtype, capacity in all_targets:
+                comp_key = f'{component_type}_{subtype}_{capacity}'
                 search_term = f'{capacity} {subtype} Laptop RAM' if component_type == 'RAM' else f'{capacity} NVMe SSD laptop'
-                results = await scrape_amazon_ca(page, search_term)
-                if len(results) < 3:
-                    results.extend(await scrape_newegg_ca(page, search_term))
+                try:
+                    results = await scrape_amazon_ca(page, search_term)
+                    if len(results) < 3:
+                        results.extend(await scrape_newegg_ca(page, search_term))
 
-                if results:
-                    top_3 = sorted(results, key=lambda x: x['price'])[:3]
-                    avg_price = sum(r['price'] for r in top_3) / len(top_3)
-                    for r in top_3:
-                        await save_component_data(component_type, subtype, capacity, r['price'], r['url'], r['source'])
-                    await save_daily_avg(f'{component_type}_{subtype}_{capacity}', avg_price)
-                    items_processed += 1
+                    if results:
+                        top_3 = sorted(results, key=lambda x: x['price'])[:3]
+                        avg_price = sum(r['price'] for r in top_3) / len(top_3)
+                        for r in top_3:
+                            await save_component_data(component_type, subtype, capacity, r['price'], r['url'], r['source'])
+                        await save_daily_avg(comp_key, avg_price)
+                        items_processed += 1
+                        succeeded_items.append(comp_key)
+                    else:
+                        failures.append({'component': comp_key, 'reason': 'No results found on Amazon or Newegg'})
+                except Exception as ex:
+                    failures.append({'component': comp_key, 'reason': str(ex)})
             await browser.close()
-        log_execution('scraper_components', 'success', items_processed)
+
+        metadata = {'succeeded': succeeded_items, 'failures': failures}
+        log_execution('scraper_components', 'success', items_processed, metadata=metadata)
     except Exception as e:
-        log_execution('scraper_components', 'failure', error_message=str(e))
+        log_execution('scraper_components', 'failure', items_found=items_processed, error_message=str(e), metadata={'failures': failures})
     print('Component scraping completed.')
 
 if __name__ == '__main__':
