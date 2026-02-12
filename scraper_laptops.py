@@ -140,9 +140,17 @@ async def _init_stealth(context):
     else:
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
 
-async def run_live_scrape(limit_per_site=10, save=True, queries=None, sites=None, proxies=None):
+async def run_live_scrape(limit_per_site=None, save=True, queries=None, sites=None, proxies=None):
+    from data_utils import load_scraper_config
+    config = load_scraper_config()
+    if config:
+        queries = queries or config.get('queries')
+        sites = sites or config.get('sites')
+        limit_per_site = limit_per_site or config.get('limit')
+
     queries = queries or ['laptop']
     sites = set([s.lower() for s in (sites or ['amazon', 'bestbuy', 'canadacomputers', 'walmart', 'staples', 'dell', 'hp'])])
+    limit_per_site = limit_per_site or 10
 
     all_results = []
 
@@ -349,16 +357,106 @@ async def scrape_canadacomputers(page, query, limit):
     except: return []
 
 async def scrape_walmart(page, query, limit):
-    return []
+    url = f'https://www.walmart.ca/search?q={query.replace(" ", "+")}'
+    try:
+        await page.goto(url, timeout=30000)
+        await page.wait_for_selector('div[data-item-id]', timeout=10000)
+        items = await page.query_selector_all('div[data-item-id]')
+        results = []
+        for item in items:
+            if len(results) >= limit: break
+            title_el = await item.query_selector('span[data-automation-id="product-title"]')
+            price_el = await item.query_selector('span[data-automation-id="product-price"]')
+            link_el = await item.query_selector('a[data-automation-id="product-anchor"]')
+            if title_el and price_el and link_el:
+                title = (await title_el.inner_text()).strip()
+                price = parse_price(await price_el.inner_text())
+                link = await link_el.get_attribute('href')
+                if price:
+                    results.append({
+                        'title': title, 'price': price, 'url': 'https://www.walmart.ca' + link,
+                        'source': 'Walmart.ca', 'cpu_model': extract_cpu_from_title(title),
+                        'ram_capacity': extract_ram_from_title(title)[0], 'ram_type': extract_ram_from_title(title)[1],
+                        'ssd_capacity': extract_ssd_from_title(title), 'screen_size': extract_screen_from_title(title)
+                    })
+        return results
+    except: return []
 
 async def scrape_staples(page, query, limit):
-    return []
+    url = f'https://www.staples.ca/search?query={query.replace(" ", "+")}'
+    try:
+        await page.goto(url, timeout=30000)
+        await page.wait_for_selector('div.product-thumbnail', timeout=10000)
+        items = await page.query_selector_all('div.product-thumbnail')
+        results = []
+        for item in items:
+            if len(results) >= limit: break
+            title_el = await item.query_selector('a.product-thumbnail__title')
+            price_el = await item.query_selector('span.money')
+            if title_el and price_el:
+                title = (await title_el.inner_text()).strip()
+                price = parse_price(await price_el.inner_text())
+                link = await title_el.get_attribute('href')
+                if price:
+                    results.append({
+                        'title': title, 'price': price, 'url': 'https://www.staples.ca' + link,
+                        'source': 'Staples.ca', 'cpu_model': extract_cpu_from_title(title),
+                        'ram_capacity': extract_ram_from_title(title)[0], 'ram_type': extract_ram_from_title(title)[1],
+                        'ssd_capacity': extract_ssd_from_title(title), 'screen_size': extract_screen_from_title(title)
+                    })
+        return results
+    except: return []
 
 async def scrape_dell(page, query, limit):
-    return []
+    # Dell often uses a search API or complex JS. Simple approach:
+    url = f'https://www.dell.com/en-ca/search/{query.replace(" ", "%20")}'
+    try:
+        await page.goto(url, timeout=30000)
+        await page.wait_for_selector('article.ps-stack', timeout=10000)
+        items = await page.query_selector_all('article.ps-stack')
+        results = []
+        for item in items:
+            if len(results) >= limit: break
+            title_el = await item.query_selector('h3 a')
+            price_el = await item.query_selector('div.ps-dell-price')
+            if title_el and price_el:
+                title = (await title_el.inner_text()).strip()
+                price = parse_price(await price_el.inner_text())
+                link = await title_el.get_attribute('href')
+                if price:
+                    results.append({
+                        'title': title, 'price': price, 'url': 'https:' + link if link.startswith('//') else link,
+                        'source': 'Dell.com', 'cpu_model': extract_cpu_from_title(title),
+                        'ram_capacity': extract_ram_from_title(title)[0], 'ram_type': extract_ram_from_title(title)[1],
+                        'ssd_capacity': extract_ssd_from_title(title), 'screen_size': extract_screen_from_title(title)
+                    })
+        return results
+    except: return []
 
 async def scrape_hp(page, query, limit):
-    return []
+    url = f'https://www.hp.com/ca-en/shop/catalogsearch/result/?q={query.replace(" ", "+")}'
+    try:
+        await page.goto(url, timeout=30000)
+        await page.wait_for_selector('li.product-item', timeout=10000)
+        items = await page.query_selector_all('li.product-item')
+        results = []
+        for item in items:
+            if len(results) >= limit: break
+            title_el = await item.query_selector('a.product-item-link')
+            price_el = await item.query_selector('span.price')
+            if title_el and price_el:
+                title = (await title_el.inner_text()).strip()
+                price = parse_price(await price_el.inner_text())
+                link = await title_el.get_attribute('href')
+                if price:
+                    results.append({
+                        'title': title, 'price': price, 'url': link,
+                        'source': 'HP.com', 'cpu_model': extract_cpu_from_title(title),
+                        'ram_capacity': extract_ram_from_title(title)[0], 'ram_type': extract_ram_from_title(title)[1],
+                        'ssd_capacity': extract_ssd_from_title(title), 'screen_size': extract_screen_from_title(title)
+                    })
+        return results
+    except: return []
 
 # --- Parsers ---
 

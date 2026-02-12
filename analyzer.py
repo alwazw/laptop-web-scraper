@@ -20,7 +20,7 @@ def run_decision_engine():
                 hist_baseline = get_historical_baseline(row['product_hash'])
 
                 # 2. Dual-Valuation Calculation
-                tev = calculate_tev(row, latest_components, hist_baseline)
+                tev, _, _ = calculate_tev(row, latest_components, hist_baseline)
 
                 # 3. Strategy Evaluation
                 margin = tev - row['listing_price']

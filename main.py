@@ -43,6 +43,7 @@ def run_script(script_name, args=None):
 
 def main():
     """Main orchestrator for the laptop arbitrage scraper"""
+    from data_utils import log_execution
     start_time = datetime.now()
     results = {}
 
