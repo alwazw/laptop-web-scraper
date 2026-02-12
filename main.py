@@ -6,7 +6,7 @@ from pathlib import Path
 
 # --- Configuration ---
 # Ensure the database file path is project-relative
-DB_PATH = str(Path(__file__).resolve().parents[0].parent / 'data' / 'arbitrage.db')
+DB_PATH = str(Path(__file__).resolve().parents[0] / 'data' / 'arbitrage.db')
 BASE_DIR = Path(__file__).resolve().parents[0]
 
 def run_script(script_name, args=None):

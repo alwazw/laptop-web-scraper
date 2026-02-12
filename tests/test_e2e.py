@@ -66,7 +66,20 @@ def test_demo_mode_inserts_rows(tmp_path):
     old = module.DB_PATH
     module.DB_PATH = str(db_file)
     save_product(product_hash, sample_laptops[0]['brand'], sample_laptops[0]['title'], sample_laptops[0]['cpu_model'], sample_laptops[0]['screen_size'], is_ram_upgradeable(sample_laptops[0]['title']), True)
-    save_listing(product_hash, sample_laptops[0]['source'], 'New', sample_laptops[0]['title'], sample_laptops[0]['price'], sample_laptops[0]['cpu_model'], sample_laptops[0]['ram_capacity'], sample_laptops[0]['ram_type'], sample_laptops[0]['ssd_capacity'], sample_laptops[0]['url'])
+
+    listing_data = {
+        'product_hash': product_hash,
+        'source': sample_laptops[0]['source'],
+        'condition_tier': 'New',
+        'title': sample_laptops[0]['title'],
+        'price': sample_laptops[0]['price'],
+        'cpu_model': sample_laptops[0]['cpu_model'],
+        'ram_capacity': sample_laptops[0]['ram_capacity'],
+        'ram_type': sample_laptops[0]['ram_type'],
+        'ssd_capacity': sample_laptops[0]['ssd_capacity'],
+        'url': sample_laptops[0]['url']
+    }
+    save_listing(listing_data)
     module.DB_PATH = old
 
     assert count_listings(str(db_file)) == 1

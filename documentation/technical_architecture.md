@@ -55,9 +55,9 @@ Table 1: components_tracking
 Table 2: component_daily_avg
 
 * id (Primary Key, INTEGER)
-* date (DATE: YYYY-MM-DD)
-* component_type (TEXT: e.g., 'RAM_DDR4_8GB')
-* avg_low_price (REAL)
+* report_date (DATE: YYYY-MM-DD)
+* component_key (TEXT: e.g., 'RAM_DDR4_8GB')
+* avg_price (REAL)
 
 Table 3: products
 
@@ -75,10 +75,10 @@ Table 4: listings
 * scraped_at (DATETIME)
 * source (TEXT)
 * condition (TEXT: 'New', 'OpenBox', 'Refurb')
-* price (REAL)
-* ram_capacity (TEXT)
-* ram_type (TEXT)
-* ssd_capacity (TEXT)
+* listing_price (REAL)
+* ram_spec_capacity (TEXT)
+* ram_spec_type (TEXT)
+* ssd_spec_capacity (TEXT)
 * url (TEXT)
 
 4. Phase I: Component Market Baselines
