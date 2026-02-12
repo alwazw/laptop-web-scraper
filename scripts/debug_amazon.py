@@ -12,7 +12,7 @@ async def run():
             locale='en-CA',
             timezone_id='America/Toronto'
         )
-        await _init_stealth(context, level='aggressive')
+        await _init_stealth(context)
         page = await context.new_page()
         print('Running scrape_amazon...')
         res = await scrape_amazon(page, 'laptop', 10)
