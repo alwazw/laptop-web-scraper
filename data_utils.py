@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
 from pathlib import Path
+from contextlib import closing
 from datetime import datetime, timedelta
 import json
 
@@ -22,18 +23,20 @@ def get_connection():
 
 def fetch_component_history():
     query = "SELECT report_date, component_key, avg_price FROM component_daily_avg ORDER BY report_date ASC"
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         return pd.read_sql_query(query, conn)
 
 def fetch_latest_listings():
     # Use fallback for column names if needed, though db_setup should handle it
     query = """
-    SELECT l.*, p.brand, p.cpu_model, p.screen_size, p.is_ram_upgradeable, p.is_ssd_upgradeable
+    SELECT l.*, p.brand, p.cpu_model, p.cpu_gen, p.screen_size,
+           p.is_ram_upgradeable, p.is_ssd_upgradeable, p.ram_soldered,
+           p.ssd_soldered, p.gpu_dedicated, p.is_touchscreen
     FROM listings l
     JOIN products p ON l.product_hash = p.product_hash
     ORDER BY l.scraped_at DESC
     """
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         df = pd.read_sql_query(query, conn)
         # Robustness check: Ensure condition_tier exists
         if 'condition_tier' not in df.columns and 'condition' in df.columns:
@@ -44,7 +47,7 @@ def fetch_latest_listings():
 
 def fetch_execution_logs():
     query = "SELECT * FROM execution_logs ORDER BY timestamp DESC LIMIT 100"
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         return pd.read_sql_query(query, conn)
 
 def get_latest_component_prices():
@@ -53,7 +56,7 @@ def get_latest_component_prices():
     FROM component_daily_avg
     WHERE report_date = (SELECT MAX(report_date) FROM component_daily_avg)
     """
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         df = pd.read_sql_query(query, conn)
     return dict(zip(df['component_key'], df['avg_price']))
 
@@ -63,16 +66,27 @@ def get_historical_baseline(product_hash, days=60):
     SELECT AVG(price) FROM listing_price_history
     WHERE product_hash = ? AND condition_tier = 'New' AND recorded_at > ?
     """
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         res = conn.execute(query, (product_hash, cutoff)).fetchone()
         return res[0] if res and res[0] else None
 
 def get_historical_avg(product_hash, days=30):
     cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
     query = "SELECT AVG(price) FROM listing_price_history WHERE product_hash = ? AND recorded_at > ?"
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         res = conn.execute(query, (product_hash, cutoff)).fetchone()
         return res[0] if res and res[0] else None
+
+def calculate_triangulated_margin(buy_price, sell_price, market_ref_price, shipping_est=25.0):
+    """
+    Triangulated Profit Logic:
+    Validation: If Sell_Price > Market_Ref_Price * 1.3, warn 'Price Inflated'.
+    Calculation: Net_Margin = (Sell_Price * 0.85) - Buy_Price - Shipping_Est.
+    """
+    is_unrealistic = sell_price > (market_ref_price * 1.3)
+    net_profit = (sell_price * 0.85) - buy_price - shipping_est
+    margin_pct = (net_profit / buy_price * 100) if buy_price > 0 else 0
+    return net_profit, margin_pct, is_unrealistic
 
 def calculate_tev(listing_row, latest_components, historical_new_price):
     """
@@ -108,13 +122,13 @@ def calculate_tev(listing_row, latest_components, historical_new_price):
 
 def log_execution(scraper_name, status, items_found=0, error_message=None, metadata=None):
     query = "INSERT INTO execution_logs (scraper_name, status, items_found, error_message, metadata) VALUES (?, ?, ?, ?, ?)"
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         conn.execute(query, (scraper_name, status, items_found, error_message, json.dumps(metadata) if metadata else None))
         conn.commit()
 
 def get_db_stats():
     stats = {}
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM listings")
         stats['total_listings'] = cursor.fetchone()[0]
@@ -131,12 +145,12 @@ def get_db_stats():
     return stats
 
 def save_scraper_config(config_dict):
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         conn.execute("INSERT OR REPLACE INTO scraper_config (config_key, config_value) VALUES ('default', ?)", (json.dumps(config_dict),))
         conn.commit()
 
 def load_scraper_config():
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         res = conn.execute("SELECT config_value FROM scraper_config WHERE config_key = 'default'").fetchone()
         if res:
             return json.loads(res[0])

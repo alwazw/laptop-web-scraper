@@ -2,6 +2,7 @@ import sqlite3
 import os
 from datetime import datetime
 from pathlib import Path
+from contextlib import closing
 
 def get_connection(db_path):
     conn = sqlite3.connect(db_path)
@@ -17,7 +18,7 @@ def init_database(force_reset=False):
         os.remove(db_path)
         print("Database reset forced.")
 
-    with get_connection(db_path) as conn:
+    with closing(get_connection(db_path)) as conn:
         cursor = conn.cursor()
 
         # 1. Component Tracking
@@ -52,9 +53,14 @@ def init_database(force_reset=False):
                 brand TEXT,
                 guessed_model TEXT,
                 cpu_model TEXT,
+                cpu_gen TEXT,
                 screen_size TEXT,
                 is_ram_upgradeable INTEGER DEFAULT 1,
-                is_ssd_upgradeable INTEGER DEFAULT 1
+                is_ssd_upgradeable INTEGER DEFAULT 1,
+                ram_soldered INTEGER,
+                ssd_soldered INTEGER,
+                gpu_dedicated INTEGER,
+                is_touchscreen INTEGER
             )
         ''')
 
@@ -82,6 +88,22 @@ def init_database(force_reset=False):
                 FOREIGN KEY(product_hash) REFERENCES products(product_hash)
             )
         ''')
+
+        # Migration for products table
+        cursor.execute("PRAGMA table_info(products)")
+        prod_columns = [col[1] for col in cursor.fetchall()]
+        needed_prod_columns = {
+            'cpu_gen': 'TEXT',
+            'ram_soldered': 'INTEGER',
+            'ssd_soldered': 'INTEGER',
+            'gpu_dedicated': 'INTEGER',
+            'is_touchscreen': 'INTEGER'
+        }
+        for col, dtype in needed_prod_columns.items():
+            if col not in prod_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE products ADD COLUMN {col} {dtype}")
+                except: pass
 
         # Check for missing columns in existing listings table (Migration Support)
         cursor.execute("PRAGMA table_info(listings)")

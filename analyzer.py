@@ -1,6 +1,11 @@
 import sqlite3
 from datetime import datetime
-from data_utils import fetch_latest_listings, get_latest_component_prices, get_historical_baseline, calculate_tev, get_connection, log_execution
+from contextlib import closing
+from data_utils import (
+    fetch_latest_listings, get_latest_component_prices, get_historical_baseline,
+    calculate_tev, get_connection, log_execution, calculate_triangulated_margin,
+    get_historical_avg
+)
 
 def run_decision_engine():
     print('\n=== v2.0 Arbitrage Decision Engine ===')
@@ -15,21 +20,26 @@ def run_decision_engine():
             log_execution('analyzer_v2', 'success', 0, error_message='No listings found')
             return
 
-        with get_connection() as conn:
+        with closing(get_connection()) as conn:
             for _, row in listings.iterrows():
-                # 1. Historical Baseline
+                # 1. Historical Baseline & Market Ref
                 hist_baseline = get_historical_baseline(row['product_hash'])
+                market_ref = get_historical_avg(row['product_hash'], days=30) or hist_baseline or row['listing_price']
 
-                # 2. Dual-Valuation Calculation
+                # 2. Triangulated Logic for Dropshipping/Resale
+                # Assume potential sell price is the market reference (conservative)
+                net_profit, margin_pct, is_unrealistic = calculate_triangulated_margin(
+                    buy_price=row['listing_price'],
+                    sell_price=market_ref,
+                    market_ref_price=market_ref
+                )
+
+                # 3. Dual-Valuation Calculation (Intrinsic)
                 tev, _, _ = calculate_tev(row, latest_components, hist_baseline)
 
-                # 3. Strategy Evaluation
-                margin = tev - row['listing_price']
-                margin_pct = (margin / row['listing_price']) * 100 if row['listing_price'] > 0 else 0
-
-                # Inventory strategy: Accept if margin > 10% and we have high confidence (historical price)
+                # Inventory strategy: Accept if margin > 10% or Net Profit is strong
                 status = 'evaluated'
-                if margin_pct >= 10.0 and hist_baseline:
+                if margin_pct >= 10.0 and not is_unrealistic:
                     status = 'accepted'
 
                 # 4. Log Decision

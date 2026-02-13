@@ -5,3 +5,4 @@ apscheduler
 playwright
 playwright-stealth
 pytest
+python-dotenv

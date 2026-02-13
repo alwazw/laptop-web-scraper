@@ -5,17 +5,19 @@ import plotly.graph_objects as go
 from data_utils import (
     fetch_component_history, fetch_latest_listings, get_latest_component_prices,
     get_db_stats, fetch_execution_logs, get_historical_baseline, get_historical_avg,
-    calculate_tev, CONDITION_MARKDOWN, load_scraper_config, save_scraper_config
+    calculate_tev, CONDITION_MARKDOWN, load_scraper_config, save_scraper_config,
+    calculate_triangulated_margin
 )
 from scheduler_utils import start_scheduler, get_jobs
 import subprocess
 import sys
 import os
 from datetime import datetime
+import json
 
 # --- Page Config ---
 st.set_page_config(
-    page_title="Arbitrage Command Center v2.1",
+    page_title="Arbitrage Command Center v2.2",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -136,7 +138,7 @@ if st.session_state.active_view == "Overview":
     if not latest_listings.empty:
         # Group by product hash to find spreads between retailers
         for phash, group in latest_listings.groupby('product_hash'):
-            # Dropshipping Logic (TPS)
+            # Dropshipping Logic (Triangulated TPS)
             retailers = group['source'].unique()
             if len(retailers) >= 2:
                 for source in retailers:
@@ -149,10 +151,15 @@ if st.session_state.active_view == "Overview":
                         buy_price = source_listings['listing_price'].max() # safety net: highest on source
                         lowest_target_price = target_listings['listing_price'].min()
                         tps = 0.95 * lowest_target_price
+                        market_ref = get_historical_avg(phash, days=30) or lowest_target_price
 
-                        margin_pct = (tps - buy_price) / buy_price
+                        net_profit, margin_pct_val, is_unrealistic = calculate_triangulated_margin(
+                            buy_price=buy_price,
+                            sell_price=tps,
+                            market_ref_price=market_ref
+                        )
 
-                        if margin_pct > 0.10:
+                        if margin_pct_val > 10.0 and not is_unrealistic:
                             dropship_deals.append({
                                 'title': group['listing_title'].iloc[0],
                                 'source_site': source,
@@ -161,8 +168,10 @@ if st.session_state.active_view == "Overview":
                                 'target_site': target,
                                 'target_price': lowest_target_price,
                                 'tps': tps,
+                                'market_ref': market_ref,
                                 'target_url': target_listings[target_listings['listing_price'] == lowest_target_price]['url'].iloc[0],
-                                'margin_pct': margin_pct * 100
+                                'margin_pct': margin_pct_val,
+                                'profit': net_profit
                             })
 
         # Inventory Acquisition Logic (Outliers)
@@ -181,7 +190,7 @@ if st.session_state.active_view == "Overview":
                     })
 
     with col1:
-        st.subheader("📦 Top Dropshipping Opportunities (TPS Strategy)")
+        st.subheader("📦 Top Dropshipping Opportunities (Triangulated)")
         if dropship_deals:
             top_ds = sorted(dropship_deals, key=lambda x: x['margin_pct'], reverse=True)[:3]
             for deal in top_ds:
@@ -189,16 +198,16 @@ if st.session_state.active_view == "Overview":
                     st.markdown(f"""
                     <div class="opportunity-card">
                         <h4>{deal['title'][:60]}...</h4>
-                        <p><b>Buying From:</b> {deal['source_site']} @ ${deal['source_price']:.2f}</p>
-                        <p><b>Selling On:</b> {deal['target_site']} @ ${deal['tps']:.2f} (TPS)</p>
-                        <p><b>The Math:</b> {deal['margin_pct']:.1f}% Margin after 5% undercut</p>
+                        <p><b>Buy:</b> {deal['source_site']} @ ${deal['source_price']:.2f} | <b>Sell:</b> ${deal['tps']:.2f} (TPS)</p>
+                        <p><b>Market Ref:</b> ${deal['market_ref']:.2f}</p>
+                        <p><b>Net Profit:</b> ${deal['profit']:.2f} ({deal['margin_pct']:.1f}%)</p>
                     </div>
                     """, unsafe_allow_html=True)
                     lc1, lc2 = st.columns(2)
-                    lc1.link_button("Source Listing", deal['source_url'], use_container_width=True)
-                    lc2.link_button("Target Market", deal['target_url'], use_container_width=True)
+                    lc1.link_button("Source Listing", deal['source_url'], width='stretch')
+                    lc2.link_button("Target Market", deal['target_url'], width='stretch')
         else:
-            st.info("No 10%+ dropshipping spreads found today.")
+            st.info("No high-confidence dropshipping spreads found.")
 
     with col2:
         st.subheader("🏢 Top Inventory Acquisitions (Outliers)")
@@ -214,7 +223,7 @@ if st.session_state.active_view == "Overview":
                         <p><b>Liquidation:</b> {deal['drop_pct']:.1f}% below average</p>
                     </div>
                     """, unsafe_allow_html=True)
-                    st.link_button("Acquire Unit", deal['url'], use_container_width=True)
+                    st.link_button("Acquire Unit", deal['url'], width='stretch')
         else:
             st.info("No significant price outliers detected.")
 
@@ -226,20 +235,15 @@ elif st.session_state.active_view == "Deal Hunter":
     else:
         # Strategy filtering
         processed = []
-        # Group to find best dropshipping for each item
         for phash, group in latest_listings.groupby('product_hash'):
-            # Calculate intrinsic value once per hash for inventory acquisition check
             hist_baseline = get_historical_baseline(phash)
-            # Use first row as template for specs
             template_row = group.iloc[0]
             tev, harvest, chassis = calculate_tev(template_row, latest_components, hist_baseline)
 
             for _, row in group.iterrows():
-                # Inventory check
                 margin = tev - row['listing_price']
                 margin_pct = (margin / row['listing_price']) * 100 if row['listing_price'] > 0 else 0
 
-                # Dropship check (TPS)
                 other_retailers = group[group['source'] != row['source']]
                 tps_margin = -100.0
                 best_target = "N/A"
@@ -247,7 +251,7 @@ elif st.session_state.active_view == "Deal Hunter":
                     lowest_target = other_retailers['listing_price'].min()
                     best_target = other_retailers[other_retailers['listing_price'] == lowest_target]['source'].iloc[0]
                     tps = 0.95 * lowest_target
-                    tps_margin = (tps - row['listing_price']) / row['listing_price'] * 100
+                    _, tps_margin, _ = calculate_triangulated_margin(row['listing_price'], tps, lowest_target)
 
                 show = False
                 if enable_dropship and tps_margin >= 10.0: show = True
@@ -259,8 +263,12 @@ elif st.session_state.active_view == "Deal Hunter":
                         'Retailer': row['source'],
                         'Title': row['listing_title'],
                         'Price': row['listing_price'],
+                        'CPU Gen': row['cpu_gen'],
+                        'Soldered': 'Y' if row['ram_soldered'] == 1 else 'N' if row['ram_soldered'] == 0 else '?',
+                        'GPU': 'Y' if row['gpu_dedicated'] == 1 else 'N',
+                        'Touch': 'Y' if row['is_touchscreen'] == 1 else 'N',
                         'TPS Margin %': round(tps_margin, 1) if tps_margin > -100 else 0,
-                        'Inventory Margin %': round(margin_pct, 1),
+                        'Inv Margin %': round(margin_pct, 1),
                         'Best Target': best_target,
                         'Method': 'Chassis' if hist_baseline else 'Harvest',
                         'row': row,
@@ -272,14 +280,13 @@ elif st.session_state.active_view == "Deal Hunter":
         df_p = pd.DataFrame(processed)
         if not df_p.empty:
             st.dataframe(
-                df_p[['Retailer', 'Title', 'Price', 'TPS Margin %', 'Inventory Margin %', 'Best Target', 'Method']],
-                use_container_width=True,
+                df_p[['Retailer', 'Title', 'Price', 'CPU Gen', 'Soldered', 'GPU', 'Touch', 'TPS Margin %', 'Inv Margin %', 'Best Target']],
+                width='stretch',
                 selection_mode="single-row",
                 on_select="rerun",
                 key="deal_table"
             )
 
-            # Drill down view
             selected_rows = st.session_state.deal_table.get("selection", {}).get("rows", [])
             if selected_rows:
                 idx = selected_rows[0]
@@ -292,7 +299,7 @@ elif st.session_state.active_view == "Deal Hunter":
                     st.write(f"**Calculated TEV:** ${deal['tev']:.2f}")
                     st.write(f"**Component Harvest Value:** ${deal['harvest']:.2f}")
                     st.write(f"**Condition-Adjusted Chassis:** ${deal['chassis']:.2f}")
-                    st.info(f"Why relevant: This unit is priced at **${deal['Price']}**, which is **{deal['Inventory Margin %']}%** below its intrinsic value of ${deal['tev']:.2f}.")
+                    st.info(f"Why relevant: This unit is priced at **${deal['Price']}**, which is **{deal['Inv Margin %']}%** below its intrinsic value.")
                 with ac2:
                     st.subheader("Hardware Profile")
                     st.json(deal['row'].to_dict())
@@ -307,7 +314,7 @@ elif st.session_state.active_view == "Market Trends":
         comp_types = st.multiselect("Select Components", df_history['component_key'].unique(), default=df_history['component_key'].unique()[:5])
         df_f = df_history[df_history['component_key'].isin(comp_types)]
         fig = px.line(df_f, x='report_date', y='avg_price', color='component_key', title="Component Price Evolution")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     st.divider()
     st.subheader("Current Market Liquidity (Components)")
@@ -324,10 +331,8 @@ elif st.session_state.active_view == "Execution Audit":
         scraper_filter = st.multiselect("Filter Scraper", logs['scraper_name'].unique(), default=logs['scraper_name'].unique())
 
     df_logs = logs[(logs['status'].isin(status_filter)) & (logs['scraper_name'].isin(scraper_filter))]
+    st.dataframe(df_logs, width='stretch')
 
-    st.dataframe(df_logs, use_container_width=True)
-
-    # Detail viewer
     st.subheader("Log Entry Details")
     if not df_logs.empty:
         selected_log_idx = st.selectbox("Select log entry to view metadata", df_logs.index, format_func=lambda x: f"{df_logs.loc[x, 'timestamp']} - {df_logs.loc[x, 'scraper_name']}")
@@ -338,12 +343,9 @@ elif st.session_state.active_view == "Execution Audit":
                 st.json(meta)
             except:
                 st.write(row['metadata'])
-        else:
-            st.write("No additional metadata for this log.")
 
 elif st.session_state.active_view == "Settings":
     st.title("⚙️ Scraper Configuration")
-
     config = load_scraper_config() or {
         "queries": ["laptop"],
         "sites": ["amazon", "bestbuy", "canadacomputers", "walmart", "staples", "dell", "hp"],
@@ -384,24 +386,8 @@ elif st.session_state.active_view == "Settings":
             save_scraper_config(new_config)
             st.success("Configuration saved!")
             if run_btn:
-                with st.spinner("Running search with new config..."):
-                    subprocess.run([sys.executable, "main.py"])
-                    st.success("Search completed!")
-                    st.rerun()
-
-    st.divider()
-    st.subheader("Automation Control")
-    jobs = get_jobs()
-    if jobs:
-        for job in jobs: st.write(f"✅ **Task Active:** {job.id} | Next Run: {job.next_run_time}")
-        if st.button("🛑 Stop Scheduler"):
-            # logic to stop
-            pass
-    else:
-        st.write("Scheduler Inactive")
-        if st.button("🕒 Enable Daily Runs"):
-            start_scheduler()
-            st.rerun()
+                subprocess.run([sys.executable, "main.py"])
+                st.rerun()
 
 st.divider()
-st.caption(f"Enterprise Arbitrage Engine v2.1 | Build {datetime.now().strftime('%Y%m%d')}")
+st.caption(f"Enterprise Arbitrage Engine v2.2 | Build {datetime.now().strftime('%Y%m%d')}")

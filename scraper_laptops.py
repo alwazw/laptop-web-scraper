@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime
 import random
 from pathlib import Path
+from contextlib import closing
 
 try:
     from playwright.async_api import async_playwright
@@ -100,15 +101,42 @@ def extract_condition_tier(title, source):
     return 'New'
 
 def save_product(product_hash, brand, guessed_model, cpu_model, screen_size, is_ram_upgradeable, is_ssd_upgradeable):
-    with get_connection() as conn:
+    from spec_lookup import find_model_specs, extract_cpu_gen, is_touchscreen
+    specs = find_model_specs(guessed_model)
+    cpu_gen = extract_cpu_gen(guessed_model)
+    touch = is_touchscreen(guessed_model)
+
+    # Override upgradeable flags if database says soldered
+    ram_soldered = specs.get('ram_soldered')
+    ssd_soldered = specs.get('ssd_soldered')
+    gpu_dedicated = specs.get('gpu_dedicated')
+
+    final_ram_upgrade = is_ram_upgradeable
+    if ram_soldered is True: final_ram_upgrade = False
+
+    final_ssd_upgrade = is_ssd_upgradeable
+    if ssd_soldered is True: final_ssd_upgrade = False
+
+    with closing(get_connection()) as conn:
         conn.execute('''
-            INSERT OR IGNORE INTO products (product_hash, brand, guessed_model, cpu_model, screen_size, is_ram_upgradeable, is_ssd_upgradeable)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (product_hash, brand, guessed_model, cpu_model, screen_size, int(is_ram_upgradeable), int(is_ssd_upgradeable)))
+            INSERT OR REPLACE INTO products (
+                product_hash, brand, guessed_model, cpu_model, cpu_gen, screen_size,
+                is_ram_upgradeable, is_ssd_upgradeable, ram_soldered, ssd_soldered,
+                gpu_dedicated, is_touchscreen
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            product_hash, brand, guessed_model, cpu_model, cpu_gen, screen_size,
+            int(final_ram_upgrade), int(final_ssd_upgrade),
+            1 if ram_soldered else 0 if ram_soldered is False else None,
+            1 if ssd_soldered else 0 if ssd_soldered is False else None,
+            1 if gpu_dedicated else 0,
+            1 if touch else 0
+        ))
         conn.commit()
 
 def save_listing(listing_data):
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO listings (
@@ -139,6 +167,12 @@ async def _init_stealth(context):
         await stealth_async(context)
     else:
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+
+async def human_scroll(page):
+    """Slow human-like scrolling to trigger lazy loading and evade detection"""
+    for i in range(3):
+        await page.mouse.wheel(0, random.randint(500, 1000))
+        await asyncio.sleep(random.uniform(0.5, 1.5))
 
 async def run_live_scrape(limit_per_site=None, save=True, queries=None, sites=None, proxies=None):
     from data_utils import load_scraper_config, log_execution
@@ -340,6 +374,11 @@ async def scrape_amazon(page, query, limit):
             title_el = await item.query_selector('h2 a span')
             price_el = await item.query_selector('span.a-offscreen')
             link_el = await item.query_selector('h2 a')
+            # Availability Filter
+            avail_txt = await item.inner_text()
+            if any(x in avail_txt.lower() for x in ["out of stock", "currently unavailable", "sold out"]):
+                continue
+
             if title_el and price_el and link_el:
                 title = (await title_el.inner_text()).strip()
                 price = parse_price(await price_el.inner_text())
@@ -355,17 +394,40 @@ async def scrape_amazon(page, query, limit):
     except: return []
 
 async def scrape_bestbuy(page, query, limit):
-    url = f'https://www.bestbuy.ca/en-ca/search?search={query.replace(" ", "+")}'
+    # Try targeted clearance/refurbished if it's a general query
+    if query.lower() == 'laptop':
+        url = 'https://www.bestbuy.ca/en-ca/category/refurbished-laptops/20352'
+    else:
+        url = f'https://www.bestbuy.ca/en-ca/search?search={query.replace(" ", "+")}'
+
     try:
         await page.goto(url, timeout=30000)
-        await page.wait_for_selector('div.productItem', timeout=10000)
-        items = await page.query_selector_all('div.productItem')
+        await human_scroll(page)
+
+        # BestBuy sometimes blocks, check for items
+        try:
+            await page.wait_for_selector('div[class*="productItem"]', timeout=10000)
+        except:
+            # Retry with slow mode
+            await asyncio.sleep(5)
+            await page.reload()
+            await human_scroll(page)
+            await page.wait_for_selector('div[class*="productItem"]', timeout=10000)
+
+        items = await page.query_selector_all('div[class*="productItem"]')
         results = []
         for item in items:
             if len(results) >= limit: break
-            title_el = await item.query_selector('h3 a span') or await item.query_selector('div.productItemName_3PByU')
-            price_el = await item.query_selector('div.price_2769_') or await item.query_selector('span.screenReaderOnly_2zX9X')
-            link_el = await item.query_selector('h3 a') or await item.query_selector('a.link_3WP9K')
+
+            # Availability Filter
+            avail_txt = await item.inner_text()
+            if any(x in avail_txt.lower() for x in ["sold out", "out of stock", "coming soon"]):
+                continue
+
+            title_el = await item.query_selector('h3 a span') or await item.query_selector('div[class*="productItemName"]')
+            price_el = await item.query_selector('div[class*="price"]') or await item.query_selector('span[class*="screenReaderOnly"]')
+            link_el = await item.query_selector('h3 a') or await item.query_selector('a[class*="link"]')
+
             if title_el and price_el and link_el:
                 title = (await title_el.inner_text()).strip()
                 price = parse_price(await price_el.inner_text())
@@ -391,6 +453,11 @@ async def scrape_canadacomputers(page, query, limit):
             if len(results) >= limit: break
             title_el = await item.query_selector('a.productName')
             price_el = await item.query_selector('span.price')
+            # Availability check
+            avail_txt = await item.inner_text()
+            if any(x in avail_txt.lower() for x in ["out of stock", "sold out"]):
+                continue
+
             if title_el and price_el:
                 title = (await title_el.inner_text()).strip()
                 price = parse_price(await price_el.inner_text())
@@ -406,14 +473,33 @@ async def scrape_canadacomputers(page, query, limit):
     except: return []
 
 async def scrape_walmart(page, query, limit):
-    url = f'https://www.walmart.ca/search?q={query.replace(" ", "+")}'
+    if query.lower() == 'laptop':
+        url = 'https://www.walmart.ca/en/cp/refurbished-laptops/6000197472551'
+    else:
+        url = f'https://www.walmart.ca/search?q={query.replace(" ", "+")}'
+
     try:
         await page.goto(url, timeout=30000)
-        await page.wait_for_selector('div[data-item-id]', timeout=10000)
+        await human_scroll(page)
+
+        try:
+            await page.wait_for_selector('div[data-item-id]', timeout=10000)
+        except:
+            await asyncio.sleep(5)
+            await page.reload()
+            await human_scroll(page)
+            await page.wait_for_selector('div[data-item-id]', timeout=10000)
+
         items = await page.query_selector_all('div[data-item-id]')
         results = []
         for item in items:
             if len(results) >= limit: break
+
+            # Availability check
+            avail_txt = await item.inner_text()
+            if any(x in avail_txt.lower() for x in ["out of stock", "see options", "sold out"]):
+                continue
+
             title_el = await item.query_selector('span[data-automation-id="product-title"]')
             price_el = await item.query_selector('span[data-automation-id="product-price"]')
             link_el = await item.query_selector('a[data-automation-id="product-anchor"]')

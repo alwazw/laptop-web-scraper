@@ -1,0 +1,44 @@
+{
+    "XPS 13 9310": {
+        "ram_soldered": true,
+        "ssd_soldered": false,
+        "max_ram_capacity": 32,
+        "gpu_dedicated": false
+    },
+    "MacBook Pro 14": {
+        "ram_soldered": true,
+        "ssd_soldered": true,
+        "max_ram_capacity": 128,
+        "gpu_dedicated": true
+    },
+    "ThinkPad T14 Gen 3": {
+        "ram_soldered": true,
+        "ssd_soldered": false,
+        "max_ram_capacity": 48,
+        "gpu_dedicated": false
+    },
+    "ThinkPad T480": {
+        "ram_soldered": false,
+        "ssd_soldered": false,
+        "max_ram_capacity": 64,
+        "gpu_dedicated": false
+    },
+    "Precision 5550": {
+        "ram_soldered": false,
+        "ssd_soldered": false,
+        "max_ram_capacity": 64,
+        "gpu_dedicated": true
+    },
+    "Latitude 5420": {
+        "ram_soldered": false,
+        "ssd_soldered": false,
+        "max_ram_capacity": 64,
+        "gpu_dedicated": false
+    },
+    "EliteBook 840 G8": {
+        "ram_soldered": false,
+        "ssd_soldered": false,
+        "max_ram_capacity": 64,
+        "gpu_dedicated": false
+    }
+}
